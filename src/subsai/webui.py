@@ -9,7 +9,6 @@ import importlib
 import json
 import mimetypes
 import os.path
-import shutil
 import sys
 import tempfile
 from base64 import b64encode
@@ -24,9 +23,9 @@ from st_aggrid import AgGrid, GridUpdateMode, GridOptionsBuilder, DataReturnMode
 
 from subsai import SubsAI, Tools
 from subsai.configs import ADVANCED_TOOLS_CONFIGS
+from subsai.models.YoutubeDownloader import download_youtube_video
 from subsai.utils import available_subs_formats
 from streamlit.web import cli as stcli
-from tempfile import NamedTemporaryFile
 
 __author__ = "abdeladim-s"
 __contact__ = "https://github.com/abdeladim-s"
@@ -162,6 +161,7 @@ def _media_file_base64(file_path, mime='video/mp4', start_time=0):
 
     return [{"type": mime, "src": f"data:{mime};base64,{data}#t={start_time}"}]
 
+
 @st.cache_resource
 def _create_translation_model(model_name: str):
     """
@@ -203,7 +203,8 @@ def _subs_df(subs):
     sub_table = []
     if subs is not None:
         for sub in subs:
-            row = [ms_to_str(sub.start, fractions=True), ms_to_str(sub.end, fractions=True), sub.text]
+            row = [ms_to_str(sub.start, fractions=True), ms_to_str(
+                sub.end, fractions=True), sub.text]
             sub_table.append(row)
 
     df = pd.DataFrame(sub_table, columns=['Start time', 'End time', 'Text'])
@@ -234,8 +235,6 @@ footer = """
 
 <div id="page-container">
     <div class="footer">
-        <p style='font-size: 0.875em;'>
-        Made with ❤ by <a style='display: inline; text-align: left;' href="https://github.com/abdeladim-s" target="_blank">abdeladim-s</a></p>
     </div>
 </div>
 """
@@ -252,24 +251,13 @@ def webui() -> None:
                            'Get Help': 'https://github.com/abdeladim-s/subsai',
                            'Report a bug': "https://github.com/abdeladim-s/subsai/issues",
                            'About': f"### [Subs AI](https://github.com/abdeladim-s/subsai) \nv{__version__} "
-                                    f"\n \nLicense: GPLv3"
+                           f"\n \nLicense: GPLv3"
                        },
                        layout="wide",
                        initial_sidebar_state='auto')
 
     st.markdown(f"# Subs AI 🎞️")
-    st.markdown(
-        "### Subtitles generation tool powered by OpenAI's [Whisper](https://github.com/openai/whisper) and its "
-        "variants.")
     st.sidebar.title("Settings")
-    st.info(
-        "This is an open source project and you are very welcome to **contribute** your awesome "
-        "comments, questions, ideas through "
-        "[discussions](https://github.com/abdeladim-s/subsai/discussions), "
-        "[issues](https://github.com/abdeladim-s/subsai/issues) and "
-        "[pull requests](https://github.com/abdeladim-s/subsai/pulls) "
-        "to the [project repository](https://github.com/abdeladim-s/subsai/). "
-    )
 
     if 'transcribed_subs' in st.session_state:
         subs = st.session_state['transcribed_subs']
@@ -280,12 +268,13 @@ def webui() -> None:
 
     with st.sidebar:
         with st.expander('Media file', expanded=True):
-            file_mode = st.selectbox("Select file mode", ['Local path', 'Upload'], index=0,
+            file_mode = st.selectbox("Select file mode", ['Local path', 'Upload', 'Youtube'], index=0,
                                      help='Use `Local Path` if you are on a local machine, or use `Upload` to '
                                           'upload your files if you are using a remote server')
             if file_mode == 'Local path':
-                file_path = st.text_input('Media file path', help='Absolute path of the media file')
-            else:
+                file_path = st.text_input(
+                    'Media file path', help='Absolute path of the media file')
+            elif file_mode == 'Upload':
                 uploaded_file = st.file_uploader("Choose a media file")
                 if uploaded_file is not None:
                     temp_dir = tempfile.TemporaryDirectory()
@@ -295,103 +284,37 @@ def webui() -> None:
                     file.write(uploaded_file.getbuffer())
                 else:
                     file_path = ""
-
-            st.session_state['file_path'] = file_path
-
-        stt_model_name = st.selectbox("Select Model", SubsAI.available_models(), index=0,
-                                      help='Select an AI model to use for '
-                                           'transcription')
-
-        with st.expander('Model Description', expanded=True):
-            info = SubsAI.model_info(stt_model_name)
-            st.info(info['description'] + '\n' + info['url'])
-
-        configs_mode = st.selectbox("Select Configs Mode", ['Manual', 'Load from local file'], index=0,
-                                    help='Play manually with the model configs or load them from an exported json file.')
-
-        with st.sidebar.expander('Model Configs', expanded=False):
-            config_schema = SubsAI.config_schema(stt_model_name)
-
-            if configs_mode == 'Manual':
-                _generate_config_ui(stt_model_name, config_schema)
             else:
-                configs_path = st.text_input('Configs path', help='Absolute path of the configs file')
+                file_path = ""
+                yt_url = st.text_input(
+                    'video url', help="Please input youtube video url!")
+                if len(yt_url) != 0 and yt_url not in st.session_state:
+                    file_path = download_youtube_video(yt_url)
+                    st.session_state[yt_url] = file_path
+                elif yt_url in st.session_state:
+                    file_path = st.session_state[yt_url]
+            st.session_state['file_path'] = file_path
 
         transcribe_button = st.button('Transcribe', type='primary')
         transcribe_loading_placeholder = st.empty()
 
+    stt_model_name = "openai/whisper"
     if transcribe_button:
         config_schema = SubsAI.config_schema(stt_model_name)
-        if configs_mode == 'Manual':
-            model_config = _get_config_from_session_state(stt_model_name, config_schema, notification_placeholder)
-        else:
-            with open(configs_path, 'r', encoding='utf-8') as f:
-                model_config = json.load(f)
+        model_config = _get_config_from_session_state(
+            stt_model_name, config_schema, notification_placeholder)
         subs = _transcribe(file_path, stt_model_name, model_config)
         st.session_state['transcribed_subs'] = subs
         transcribe_loading_placeholder.success('Done!', icon="✅")
 
     with st.expander('Post Processing Tools', expanded=False):
-        basic_tool = st.selectbox('Basic tools', options=['', 'Set time', 'Shift'],
-                                  help="Basic tools to modify subtitles")
-        if basic_tool == 'Set time':
-            st.info('Set subtitle time')
-            sub_index = st.selectbox('Subtitle index', options=range(len(subs)))
-            time_to_change = st.radio('Select what you want to modify', options=['Start time', 'End time'])
-            h_col, m_col, s_col, ms_col = st.columns([1, 1, 1, 1])
-            with h_col:
-                h = st.number_input('h')
-            with m_col:
-                m = st.number_input('m')
-            with s_col:
-                s = st.number_input('s')
-            with ms_col:
-                ms = st.number_input('ms')
-            submit = st.button('Modify')
-            if submit:
-                if time_to_change == 'Start time':
-                    subs[sub_index].start = make_time(h, m, s, ms)
-                elif time_to_change == 'End time':
-                    subs[sub_index].end = make_time(h, m, s, ms)
-                st.session_state['transcribed_subs'] = subs
-
-        elif basic_tool == 'Shift':
-            st.info('Shift all subtitles by constant time amount')
-            h_col, m_col, s_col, ms_col, frames_col, fps_col = st.columns([1, 1, 1, 1, 1, 1])
-            with h_col:
-                h = st.number_input('h', key='h')
-            with m_col:
-                m = st.number_input('m', key='m')
-            with s_col:
-                s = st.number_input('s', key='s')
-            with ms_col:
-                ms = st.number_input('ms', key='ms')
-            with frames_col:
-                frames = st.number_input('frames')
-            with fps_col:
-                fps = st.number_input('fps')
-            submit = st.button('Shift')
-            if submit:
-                subs.shift(h, m, s, ms, frames=None if frames == 0 else frames, fps=None if fps == 0 else fps)
-                st.session_state['transcribed_subs'] = subs
         advanced_tool = st.selectbox('Advanced tools', options=['', *list(ADVANCED_TOOLS_CONFIGS.keys())],
                                      help='some post processing tools')
-        if advanced_tool == 'Translation':
-            configs = ADVANCED_TOOLS_CONFIGS[advanced_tool]
-            description = configs['description'] + '\n\nURL: ' + configs['url']
-            config_schema = configs['config_schema']
-            st.info(description)
-            _generate_config_ui(advanced_tool, config_schema)
-            translation_config = _get_config_from_session_state(advanced_tool, config_schema, notification_placeholder)
-            download_and_create_model = st.checkbox('Download and create the model', value=False,
-                                                    help='This will download the weights'
-                                                         ' and initializes the model')
-            if download_and_create_model:
-                translation_model = _create_translation_model(translation_config['model'])
-                source_language = st.selectbox('Source language',
-                                               options=tools.available_translation_languages(translation_model))
-                target_language = st.selectbox('Target language',
-                                               options=tools.available_translation_languages(translation_model))
+
+        if advanced_tool == 'google-translate':
+            target_language = st.selectbox('Target language',
+                                           options=("ja", "zh-CN", "en"))
+            try:
                 b1, b2 = st.columns([1, 1])
                 with b1:
                     submitted = st.button("Translate")
@@ -400,36 +323,24 @@ def webui() -> None:
                             st.error('No subtitles to translate')
                         else:
                             with st.spinner("Processing (This may take a while) ..."):
-                                translated_subs = tools.translate(subs=subs,
-                                                                  source_language=source_language,
-                                                                  target_language=target_language,
-                                                                  model=translation_model,
-                                                                  translation_configs=translation_config)
+                                translated_subs = tools.google_translate(subs=subs,
+                                                                         source_language='auto',
+                                                                         target_language=target_language)
                                 st.session_state['original_subs'] = st.session_state['transcribed_subs']
                                 st.session_state['transcribed_subs'] = translated_subs
-                            notification_placeholder.success('Success!', icon="✅")
+                            notification_placeholder.success(
+                                'Success!', icon="✅")
                 with b2:
-                    reload_transcribed_subs = st.button('Reload Original subtitles')
+                    reload_transcribed_subs = st.button(
+                        'Reload Original subtitles')
                     if reload_transcribed_subs:
                         if 'original_subs' in st.session_state:
                             st.session_state['transcribed_subs'] = st.session_state['original_subs']
                         else:
                             st.error('Original subs are already loaded')
-
-        if advanced_tool == 'ffsubsync':
-            configs = ADVANCED_TOOLS_CONFIGS[advanced_tool]
-            description = configs['description'] + '\n\nURL: ' + configs['url']
-            config_schema = configs['config_schema']
-            st.info(description)
-            _generate_config_ui(advanced_tool, config_schema)
-            ffsubsync_config = _get_config_from_session_state(advanced_tool, config_schema, notification_placeholder)
-            submitted = st.button("ffsubsync")
-            if submitted:
-                with st.spinner("Processing (This may take a while) ..."):
-                    synced_subs = tools.auto_sync(subs, file_path, **ffsubsync_config)
-                    st.session_state['original_subs'] = st.session_state['transcribed_subs']
-                    st.session_state['transcribed_subs'] = synced_subs
-                notification_placeholder.success('Success!', icon="✅")
+            except Exception as e:
+                st.error("dont find subtitles, google translator failed!")
+                print(f"翻译失败: {e}")
 
     subs_column, video_column = st.columns([4, 3])
 
@@ -440,7 +351,8 @@ def webui() -> None:
             df = pd.DataFrame()
         gb = GridOptionsBuilder()
         # customize gridOptions
-        gb.configure_default_column(groupable=False, value=True, enableRowGroup=True, editable=True)
+        gb.configure_default_column(
+            groupable=False, value=True, enableRowGroup=True, editable=True)
 
         gb.configure_column("Start time", type=["customDateTimeFormat"],
                             custom_format_string='HH:mm:ss', pivot=False, editable=False)
@@ -448,7 +360,8 @@ def webui() -> None:
                             custom_format_string='HH:mm:ss', pivot=False, editable=False)
         gb.configure_column("Text", type=["textColumn"], editable=True)
 
-        gb.configure_grid_options(domLayout='normal', allowContextMenuWithControlKey=False, undoRedoCellEditing=True, )
+        gb.configure_grid_options(
+            domLayout='normal', allowContextMenuWithControlKey=False, undoRedoCellEditing=True, )
         gb.configure_selection(use_checkbox=False)
 
         gridOptions = gb.build()
@@ -503,13 +416,17 @@ def webui() -> None:
 
         if 'file_path' in st.session_state and st.session_state['file_path'] != '':
             if os.path.getsize(file_path) > st.web.server.server.get_max_message_size_bytes():
-                print(f"Media file cannot be previewed: size exceeds the message size limit of {st.web.server.server.get_max_message_size_bytes() / int(1e6):.2f} MB.")
+                print(f"Media file cannot be previewed: size exceeds the message size limit of {
+                      st.web.server.server.get_max_message_size_bytes() / int(1e6):.2f} MB.")
                 st.info(f'Media file cannot be previewed: size exceeds the size limit of {st.web.server.server.get_max_message_size_bytes() / int(1e6):.2f} MB.'
                         f' But you can try to run the transcription as usual.', icon="🚨")
-                st.info(f' You can increase the limit by running: subsai-webui --server.maxMessageSize Your_desired_size_limit_in_MB')
-                st.info(f"If it didn't work, please use the command line interface instead.")
+                st.info(
+                    f' You can increase the limit by running: subsai-webui --server.maxMessageSize Your_desired_size_limit_in_MB')
+                st.info(
+                    f"If it didn't work, please use the command line interface instead.")
             else:
-                event = st_player(_media_file_base64(st.session_state['file_path']), **options, height=500, key="player")
+                event = st_player(_media_file_base64(
+                    st.session_state['file_path']), **options, height=500, key="player")
 
     with st.expander('Export subtitles file'):
         media_file = Path(file_path)
@@ -518,45 +435,47 @@ def webui() -> None:
             available_subs_formats())
         export_filename = st.text_input('Filename', value=media_file.stem)
         if export_format == '.sub':
-            fps = st.number_input('Framerate', help='Framerate must be specified when writing MicroDVD')
+            fps = st.number_input(
+                'Framerate', help='Framerate must be specified when writing MicroDVD')
         else:
             fps = None
         submitted = st.button("Export")
         if submitted:
             try:
                 subs = st.session_state['transcribed_subs']
-                exported_file = media_file.parent / (export_filename + export_format)
+                exported_file = media_file.parent / \
+                    (export_filename + export_format)
                 subs.save(exported_file, fps=fps)
                 st.success(f'Exported file to {exported_file}', icon="✅")
                 with open(exported_file, 'r', encoding='utf-8') as f:
-                    st.download_button('Download', f, file_name=export_filename + export_format)
+                    st.download_button(
+                        'Download', f, file_name=export_filename + export_format)
             except Exception as e:
-                st.error("Maybe you forgot to run the transcription! Please transcribe a media file first to export its transcription!")
+                st.error(
+                    "Maybe you forgot to run the transcription! Please transcribe a media file first to export its transcription!")
                 st.error("See the terminal for more info!")
                 print(e)
 
     with st.expander('Merge subtitles with video'):
         media_file = Path(file_path)
-        subs_lang = st.text_input('Subtitles language', value='English', key='merged_video_subs_lang')
-        exported_video_filename = st.text_input('Filename', value=f"{media_file.stem}-subs-merged", key='merged_video_out_file')
+        exported_video_filename = st.text_input(
+            'Filename', value=f"{media_file.stem}-subs-merged", key='merged_video_out_file')
         submitted = st.button("Merge", key='merged_video_export_btn')
         if submitted:
             try:
                 subs = st.session_state['transcribed_subs']
-                exported_file_path = tools.merge_subs_with_video({subs_lang: subs}, str(media_file.resolve()), exported_video_filename)
+                # subs = tools.merge_subs(
+                #     st.session_state['transcribed_subs'], st.session_state['original_subs'])
+                exported_file_path = tools.merge_subs_with_video2(
+                    subs, str(media_file.resolve()), exported_video_filename)
                 st.success(f'Exported file to {exported_file_path}', icon="✅")
                 with open(exported_file_path, 'rb') as f:
-                    st.download_button('Download', f, file_name=f"{exported_video_filename}{media_file.suffix}")
+                    st.download_button('Download', f, file_name=f"{
+                                       exported_video_filename}{media_file.suffix}")
             except Exception as e:
                 st.error("Something went wrong!")
                 st.error("See the terminal for more info!")
                 print(e)
-
-    with st.expander('Export configs file'):
-        export_filename = st.text_input('Filename', value=f"{stt_model_name}_configs.json".replace('/', '-'))
-        configs_dict = _get_config_from_session_state(stt_model_name, config_schema, notification_placeholder)
-        st.download_button('Download', data=json.dumps(configs_dict), file_name=export_filename, mime='json')
-
 
     st.markdown(footer, unsafe_allow_html=True)
 
@@ -565,7 +484,8 @@ def run():
     if runtime.exists():
         webui()
     else:
-        sys.argv = ["streamlit", "run", __file__, "--theme.base", "dark"] + sys.argv
+        sys.argv = ["streamlit", "run", __file__,
+                    "--theme.base", "dark"] + sys.argv
         sys.exit(stcli.main())
 
 

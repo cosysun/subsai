@@ -29,6 +29,9 @@ from subsai.configs import AVAILABLE_MODELS
 from subsai.models.abstract_model import AbstractModel
 from ffsubsync.ffsubsync import run, make_parser
 from subsai.utils import available_translation_models
+from deep_translator import GoogleTranslator
+
+import subprocess
 
 __author__ = "abdeladim-s"
 __contact__ = "https://github.com/abdeladim-s"
@@ -99,7 +102,8 @@ class SubsAI:
     def transcribe(media_file: str, model: Union[AbstractModel, str], model_config: dict = {}) -> SSAFile:
         """
         Takes the model instance (created by :func:`create_model`) or the model name.
-        Returns a :class:`pysubs2.SSAFile` <https://pysubs2.readthedocs.io/en/latest/api-reference.html#ssafile-a-subtitle-file>`_
+        #ssafile-a-subtitle-file>`_
+        Returns a :class:`pysubs2.SSAFile` <https://pysubs2.readthedocs.io/en/latest/api-reference.html
 
         :param media_file: path of the media file (video/audio)
         :param model: model instance or model name
@@ -157,8 +161,27 @@ class Tools:
         :param model_family: Either "mbart50" or "m2m100". By default, See `dl-translate` docs
         :return: A translation model instance
         """
-        mt = TranslationModel(model_or_path=model_name, model_family=model_family)
+        mt = TranslationModel(model_or_path=model_name,
+                              model_family=model_family)
         return mt
+
+    @staticmethod
+    def google_translate(subs: SSAFile,
+                         source_language: str,
+                         target_language: str) -> SSAFile:
+
+        # 初始化Google翻译器
+        translator = GoogleTranslator(
+            source=source_language, target=target_language)
+        translated_subs = SSAFile()
+        for sub in subs:
+            translated_sub = sub.copy()
+            if sub.plaintext.strip():  # 只翻译有内容的字幕
+                translated = translator.translate(
+                    sub.plaintext)
+                translated_sub.text = translated
+            translated_subs.append(translated_sub)
+        return translated_subs
 
     @staticmethod
     def translate(subs: SSAFile,
@@ -181,7 +204,8 @@ class Tools:
         :return: returns an `SSAFile` subtitles translated to the target language
         """
         if type(model) == str:
-            translation_model = Tools.create_translation_model(model_name=model, model_family=model_family)
+            translation_model = Tools.create_translation_model(
+                model_name=model, model_family=model_family)
         else:
             translation_model = model
 
@@ -240,12 +264,75 @@ class Tools:
             os.unlink(srtin_file.name)
             srtout_file.close()
             os.unlink(srtout_file.name)
+
+    @staticmethod
+    def merge_subs(up_subs: SSAFile, down_subs: SSAFile) -> SSAFile:
+        out_subs = SSAFile()
+        # 假设 subs1 是英文，subs2 是中文
+        for up_sub, down_sub in zip(up_subs, down_subs):
+            out_sub = down_sub.copy()
+            out_subs.append(out_sub)
+            # 检查每条字幕的时间是否相同，可以根据需要进行时间对齐
+            # 如果两者的时间不同，你可能需要根据具体时间段合并，而不仅仅是 zip
+            if up_sub.start == down_sub.start and up_sub.end == down_sub.end:
+                # 字幕放在上方
+                out_sub.margin_v = 20  # 上方
+                # 字幕放在下方
+                up_sub.margin_v = 100  # 下方
+                # 合并两个字幕条目
+                out_subs.append(up_sub)
+        return out_subs
+
+    @staticmethod
+    def merge_subs_with_video2(subs: SSAFile,
+                               media_file: str,
+                               output_filename: str = None,
+                               **kwargs) -> str:
+        """
+        Uses ffmpeg to merge subtitles into a video media file.
+        :param subs: dict with (lang,`SSAFile` object) key,value pairs
+        :param media_file: path of the video media_file
+        :param output_filename: Output file name (without the extension as it will be inferred from the media file)
+        :return: Absolute path of the output file
+        """
+        # Probe video metadata
+        metadata = ffmpeg.probe(media_file, select_streams="v")['streams'][0]
+        assert metadata['codec_type'] == 'video', f'File {
+            media_file} is not a video'
+
+        for style in subs:
+            style.primarycolor = pysubs2.Color(
+                255, 255, 255, 0)  # RGBA for white color
+
+        try:
+            in_file = pathlib.Path(media_file)
+            if output_filename is not None:
+                out_file = in_file.parent / \
+                    f"{output_filename}{in_file.suffix}"
+            else:
+                out_file = in_file.parent / \
+                    f"{in_file.stem}-subs-merged{in_file.suffix}"
+
+            # Output file path
+            output_file = str(out_file.resolve())
+            srtin = './1.srt'
+            subs.save(srtin)  # Save subtitle to temporary file
+            cmd = f'ffmpeg -y -i "{
+                media_file}" -vf "subtitles=1.srt:force_style=\'FontColor = &HFFFFFF & \'" -c:a copy "{output_file}"'
+            subprocess.call(cmd, shell=True)
+
+        finally:
+            os.remove(srtin)
+            pass
+
+        return str(out_file.resolve())
+
     @staticmethod
     def merge_subs_with_video(subs: Dict[str, SSAFile],
-                  media_file: str,
-                  output_filename: str = None,
-                  **kwargs
-                  ) -> str:
+                              media_file: str,
+                              output_filename: str = None,
+                              **kwargs
+                              ) -> str:
         """
         Uses ffmpeg to merge subtitles into a video media file.
         You cna merge multiple subs at the same time providing a dict with (lang,`SSAFile` object) key,value pairs
@@ -266,21 +353,25 @@ class Tools:
         :return: Absolute path of the output file
         """
         metadata = ffmpeg.probe(media_file, select_streams="v")['streams'][0]
-        assert metadata['codec_type'] == 'video', f'File {media_file} is not a video'
+        assert metadata['codec_type'] == 'video', f'File {
+            media_file} is not a video'
 
-
-        srtin_files = {key: tempfile.NamedTemporaryFile(delete=False) for key in subs}
+        srtin_files = {key: tempfile.NamedTemporaryFile(
+            delete=False) for key in subs}
         try:
             in_file = pathlib.Path(media_file)
             if output_filename is not None:
-                out_file = in_file.parent / f"{output_filename}{in_file.suffix}"
+                out_file = in_file.parent / \
+                    f"{output_filename}{in_file.suffix}"
             else:
-                out_file = in_file.parent / f"{in_file.stem}-subs-merged{in_file.suffix}"
+                out_file = in_file.parent / \
+                    f"{in_file.stem}-subs-merged{in_file.suffix}"
 
             video = str(in_file.resolve())
-            metadata_subs = {'scodec': 'mov_text'} if metadata['codec_name'] == 'h264' else {}
+            metadata_subs = {
+                'scodec': 'mov_text'} if metadata['codec_name'] == 'h264' else {}
             ffmpeg_subs_inputs = []
-            for i,lang in enumerate(srtin_files):
+            for i, lang in enumerate(srtin_files):
                 srtin = srtin_files[lang].name + '.srt'
                 subs[lang].save(srtin)
                 ffmpeg_subs_inputs.append(ffmpeg.input(srtin)['s'])
@@ -304,6 +395,7 @@ class Tools:
                 os.unlink(srtin_file.name)
         return str(out_file.resolve())
 
+
 if __name__ == '__main__':
     file = '../../assets/video/test1.webm'
     subs_ai = SubsAI()
@@ -311,5 +403,5 @@ if __name__ == '__main__':
     subs = subs_ai.transcribe(file, model)
     subs.save('../../assets/video/test1.srt')
     subs2 = pysubs2.load('../../assets/video/test0-ar.srt')
-    Tools.merge_subs_with_video2({'English': subs, "Arabic": subs2}, file)
+    Tools.merge_subs_with_video({'English': subs, "Arabic": subs2}, file)
     # subs.save('test1.srt')
