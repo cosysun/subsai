@@ -1,16 +1,16 @@
-openai-whisper==20231106
+openai-whisper
 streamlit~=1.20.0
 streamlit_player~=0.1.5
 streamlit-aggrid~=0.3.4
 ffsubsync~=0.4.24
 whisper-timestamped @ git+https://github.com/linto-ai/whisper-timestamped
-pandas==1.5.3
+pandas
 pysubs2~=1.6.0
-pywhispercpp==1.1.1
-dl_translate==0.3.0
+pywhispercpp
+dl_translate
 faster_whisper
 whisperx @ git+https://github.com/m-bain/whisperx.git
-stable-ts==2.13.3
+stable-ts
 openai
 transformers
 numpy<2
